@@ -873,10 +873,16 @@
 
             globalSelect.innerHTML = `<option value="ALL">Semua Kelas (${classes.length})</option>` + 
                 classes.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
-            globalSelect.value = currentGlobalVal && (currentGlobalVal === 'ALL' || classes.some(c => c.id === currentGlobalVal)) ? currentGlobalVal : 'ALL';
+            
+            if (currentGlobalVal && (currentGlobalVal === 'ALL' || classes.some(c => c.id === currentGlobalVal))) {
+                globalSelect.value = currentGlobalVal;
+            } else {
+                globalSelect.value = 'ALL';
+            }
 
-            studentClassInput.innerHTML = classes.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
-            importClassSelect.innerHTML = classes.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+            const html = classes.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+            studentClassInput.innerHTML = html;
+            importClassSelect.innerHTML = `<option value="AUTO">⚡ Deteksi Otomatis dari Kolom "Kelas" Excel</option>` + html;
         }
 
         function renderClassCards() {
@@ -1250,113 +1256,80 @@
         window.handleFileSelect = function(e) {
             const file = e.target.files[0];
             if (!file) return;
-
             const reader = new FileReader();
             reader.onload = function(evt) {
-                try {
-                    const data = new Uint8Array(evt.target.result);
-                    const workbook = XLSX.read(data, { type: 'array' });
-                    const firstSheetName = workbook.SheetNames[0];
-                    const worksheet = workbook.Sheets[firstSheetName];
-                    const json = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+                const workbook = XLSX.read(new Uint8Array(evt.target.result), { type: 'array' });
+                const json = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { header: 1 });
+                if (json.length < 2) return showToast('File kosong/tidak valid.', 'error');
+                
+                const headers = json[0].map(h => String(h || '').trim().toLowerCase());
+                const nisnIdx = headers.findIndex(h => h.includes('nisn'));
+                const nameIdx = headers.findIndex(h => h.includes('nama'));
+                const classIdx = headers.findIndex(h => h.includes('kelas') || h.includes('rombel'));
+                const tIdx = headers.findIndex(h => h.includes('tugas'));
+                const utsIdx = headers.findIndex(h => h.includes('uts'));
+                const uasIdx = headers.findIndex(h => h.includes('uas'));
+                
+                const parsed = json.slice(1).map((row, i) => {
+                    const name = nameIdx !== -1 ? row[nameIdx] : row[1];
+                    if(!name) return null;
+                    return {
+                        nisn: nisnIdx !== -1 ? String(row[nisnIdx]) : `005100${i+1}`, 
+                        name: String(name).trim(),
+                        classNameFromExcel: classIdx !== -1 ? String(row[classIdx] || '').trim() : '',
+                        harian: 75, tugas: Number(tIdx !== -1 ? row[tIdx] : 75) || 0,
+                        uts: Number(utsIdx !== -1 ? row[utsIdx] : 75) || 0, uas: Number(uasIdx !== -1 ? row[uasIdx] : 75) || 0
+                    };
+                }).filter(Boolean);
 
-                    if (json.length < 2) {
-                        showToast('File Excel kosong atau tidak sesuai.', 'error');
-                        return;
-                    }
-
-                    const headers = json[0].map(h => String(h || '').trim().toLowerCase());
-                    
-                    const nisnIdx = headers.findIndex(h => h.includes('nisn') || h.includes('nis'));
-                    const nameIdx = headers.findIndex(h => h.includes('nama') || h.includes('siswa'));
-                    
-                    const uhIndices = [];
-                    headers.forEach((h, idx) => {
-                        if (h.includes('uh') || h.includes('ph') || h.includes('harian')) {
-                            uhIndices.push(idx);
-                        }
-                    });
-
-                    const tugasIdx = headers.findIndex(h => h.includes('tugas') || h.includes('penugasan') || h.includes('pr') || h.includes('projek'));
-                    const utsIdx = headers.findIndex(h => h.includes('uts') || h.includes('mid') || h.includes('pts'));
-                    const uasIdx = headers.findIndex(h => h.includes('uas') || h.includes('pas') || h.includes('pat') || h.includes('akhir'));
-
-                    const rows = json.slice(1);
-                    const parsed = [];
-
-                    rows.forEach((row, i) => {
-                        const name = nameIdx !== -1 ? row[nameIdx] : row[1];
-                        if (!name) return;
-
-                        let harianScores = [];
-                        if (uhIndices.length > 0) {
-                            harianScores = uhIndices.map(idx => Number(row[idx]) || 0);
-                        } else {
-                            harianScores = [75, 80, 85];
-                        }
-
-                        const avgHarian = harianScores.length > 0 ? Math.round(harianScores.reduce((a,b)=>a+b,0)/harianScores.length) : 75;
-
-                        parsed.push({
-                            nisn: nisnIdx !== -1 ? String(row[nisnIdx] || `005100${i+1}`) : `005100${i+1}`,
-                            name: String(name).trim(),
-                            harianScores: harianScores,
-                            harian: avgHarian,
-                            tugas: Number(tugasIdx !== -1 ? row[tugasIdx] : 75) || 0,
-                            uts: Number(utsIdx !== -1 ? row[utsIdx] : 75) || 0,
-                            uas: Number(uasIdx !== -1 ? row[uasIdx] : 75) || 0
-                        });
-                    });
-
-                    window.appState.parsedExcelBuffer = parsed;
-                    document.getElementById('excelFileName').textContent = file.name;
-                    document.getElementById('excelRecordCount').textContent = `${parsed.length} Siswa Terdeteksi`;
-                    document.getElementById('excelPreviewContainer').classList.remove('hidden');
-
-                } catch (err) {
-                    console.error("Parse Excel Error:", err);
-                    showToast('Gagal membaca file Excel.', 'error');
-                }
+                window.appState.parsedExcelBuffer = parsed;
+                document.getElementById('excelFileName').textContent = file.name;
+                document.getElementById('excelRecordCount').textContent = `${parsed.length} Siswa Terdeteksi`;
+                document.getElementById('excelPreviewContainer').classList.remove('hidden');
             };
             reader.readAsArrayBuffer(file);
         };
 
         window.processAndSaveExcelData = async function() {
-            const parsed = window.appState.parsedExcelBuffer;
-            const userId = window.appState.user?.uid;
-            const targetClassId = document.getElementById('importClassSelect').value;
+            if (is_preview) return showToast("Aksi diblokir dalam Preview Mode", "error");
             
-            if (!parsed.length || !userId || !targetClassId) {
-                showToast('Pilih kelas tujuan impor terlebih dahulu', 'warning');
-                return;
-            }
-
-            try {
-                const batch = writeBatch(db);
-                parsed.forEach(student => {
-                    const docRef = doc(collection(db, 'artifacts', appId, 'users', userId, 'students'));
-                    batch.set(docRef, { ...student, classId: targetClassId });
+            const targetMode = document.getElementById('importClassSelect').value;
+            const userId = window.appState.user.uid;
+            const batch = writeBatch(db);
+            
+            if (targetMode === 'AUTO') {
+                // AUTO-GENERATOR KELAS (SINGULARITY ENGINE)
+                const classMap = new Map();
+                window.appState.classes.forEach(c => classMap.set(c.name.toLowerCase(), c.id));
+                
+                window.appState.parsedExcelBuffer.forEach(s => {
+                    let cName = s.classNameFromExcel || 'Kelas Umum';
+                    let cId = classMap.get(cName.toLowerCase());
+                    
+                    if (!cId) {
+                        // Ciptakan kelas baru secara instan jika belum ada di database
+                        const newClassRef = doc(collection(db, 'artifacts', appId, 'users', userId, 'classes'));
+                        cId = newClassRef.id;
+                        classMap.set(cName.toLowerCase(), cId);
+                        batch.set(newClassRef, { name: cName, academicYear: '2025/2026' });
+                    }
+                    
+                    const studentData = { ...s, classId: cId };
+                    delete studentData.classNameFromExcel; // Hapus data temporary sebelum push ke Firestore
+                    batch.set(doc(collection(db, 'artifacts', appId, 'users', userId, 'students')), studentData);
                 });
-
-                await batch.commit();
-                showToast(`Berhasil mengimpor ${parsed.length} siswa!`, 'success');
-                closeImportModal();
-            } catch (err) {
-                console.error("Save excel error:", err);
-                showToast('Gagal menyimpan data ke database.', 'error');
+            } else {
+                // MANUAL OVERRIDE KE 1 KELAS SPESIFIK
+                window.appState.parsedExcelBuffer.forEach(s => {
+                    const studentData = { ...s, classId: targetMode };
+                    delete studentData.classNameFromExcel;
+                    batch.set(doc(collection(db, 'artifacts', appId, 'users', userId, 'students')), studentData);
+                });
             }
-        };
-
-        window.downloadExcelTemplate = function() {
-            const templateData = [
-                { "NISN": "0051234001", "Nama Siswa": "Ahmad Fauzi", "UH 1": 85, "UH 2": 90, "Tugas": 82, "UTS": 80, "UAS": 88 },
-                { "NISN": "0051234002", "Nama Siswa": "Siti Nurhaliza", "UH 1": 92, "UH 2": 95, "Tugas": 90, "UTS": 88, "UAS": 95 }
-            ];
-            const ws = XLSX.utils.json_to_sheet(templateData);
-            const wb = XLSX.utils.book_new();
-            XLSX.utils.book_append_sheet(wb, ws, "Template");
-            XLSX.writeFile(wb, "Template_Impor_Siswa.xlsx");
-            showToast('Template Excel berhasil diunduh!', 'success');
+            
+            await batch.commit();
+            showToast('Impor Serentak Berhasil!', 'success');
+            closeImportModal();
         };
 
         window.exportToExcel = function() {
@@ -1658,7 +1631,17 @@
         };
         window.closeSettingsModal = () => document.getElementById('settingsModal').classList.add('hidden');
 
-        window.applyFilters = () => recalculateAndRender();
+        window.downloadExcelTemplate = function() {
+            const templateData = [
+                { "NISN": "0051234001", "Nama Siswa": "Ahmad Fauzi", "Kelas": "X IPA 1", "Tugas": 82, "UTS": 80, "UAS": 88 },
+                { "NISN": "0051234002", "Nama Siswa": "Siti Nurhaliza", "Kelas": "XI IPS 2", "Tugas": 90, "UTS": 88, "UAS": 95 }
+            ];
+            const ws = XLSX.utils.json_to_sheet(templateData);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "Template");
+            XLSX.writeFile(wb, "Template_Impor_Massal.xlsx");
+            showToast('Template Excel berhasil diunduh!', 'success');
+        };
 
         window.showToast = function(message, type = 'info') {
             const container = document.getElementById('toastContainer');
